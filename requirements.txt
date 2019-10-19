@@ -1,0 +1,10 @@
+wheel
+pytest>=4.5.0
+pandas>=0.24.0
+matplotlib
+numpy
+colorama
+Django>=2.0,<3.0
+tables
+seaborn
+scipy
