@@ -41,7 +41,7 @@ class InfoSetContainer:
             else:
                 # just assign uniform probability over all possible actions
                 # since there is no counterfactual regrets
-                self.strategy[:] = 1. / NB_ACTIONS
+                self.strategy[action] = 1. / NB_ACTIONS
             # need to incorporate the reach probability to this particular
             # history in the accumulation for the overall strategy
             # info_msg = 'strategy sum: {}, strategy: {}, reach_prob: {}'
@@ -147,6 +147,7 @@ class CFRInstance:
         for action in range(NB_ACTIONS):
             action_str = PASS_STR if action == PASS else BET_STR
             next_history = history + action_str
+
             if player == 0:
                 p0_action = p0 * strategy[action]
                 # You need to flip the sign since the CFR value is returned 
@@ -242,7 +243,7 @@ class CFRInstance:
 
 
 if __name__ == '__main__':
-    it = 10000
+    it = 100000
 
     # cards = np.asarray([i + 1 for i in range(3)])
     # print('Unshuffled cards: \n{}'.format(cards))
