@@ -103,14 +103,33 @@ class CFRInstance:
             start, end = int(plays - 2), int(plays)
             double_bet = history[start:end] == double_bet_str
             is_player_card_higher = cards[player] > cards[opponent]
+            winner = None
+            utility = None
 
             if terminal_pass:
                 if history == double_pass_str:
-                    return 1 if is_player_card_higher else -1
+                    if is_player_card_higher:
+                        winner = player
+                        utility = 1
+                    else:
+                        winner = opponent
+                        utility = -1
                 else:
-                    return 1
+                    winner = player
+                    utility = 1
             elif double_bet:
-                return 2 if is_player_card_higher else -2
+                if is_player_card_higher:
+                    winner = player
+                    utility = 2
+                else:
+                    winner = opponent
+                    utility = -2
+
+            # info_msg = 'Winner: Player {}, Uility: {}, History: {}'
+            # info_msg = info_msg.format(winner, utility, history)
+            # logger.info(info_msg)
+
+            return utility
 
     def get_info_set(self, info_set):
         node = self.node_map.get(info_set)
@@ -130,10 +149,19 @@ class CFRInstance:
             next_history = history + action_str
             if player == 0:
                 p0_action = p0 * strategy[action]
-                util[action] = -self.cfr(next_history, p0_action, p1, cards)
+                # You need to flip the sign since the CFR value is returned 
+                # in the perspective of your opponent.
+                cfr = -self.cfr(next_history, p0_action, p1, cards)
+                util[action] = cfr
             else:
                 p1_action = p1 * strategy[action]
-                util[action] = -self.cfr(next_history, p0, p1_action, cards)
+                cfr = -self.cfr(next_history, p0, p1_action, cards)
+                util[action] = cfr
+
+            # info_msg = 'CFR for Player {} History {}: {}'
+            # info_msg = info_msg.format(player, next_history, cfr)
+            # logger.info(info_msg)
+
             node_util += strategy[action] * util[action]
 
         return util, node_util
@@ -183,8 +211,8 @@ class CFRInstance:
         # For each action, compute and accumulate counterfactual regret
         self.accumulate_regret(player_ind, node, util, node_util, p0, p1)
 
-        info_msg = 'History: {} with utility: {:.2f}'
-        info_msg = info_msg.format(history, node_util)
+        # info_msg = 'History: {} with utility: {:.2f}'
+        # info_msg = info_msg.format(history, node_util)
         # logger.info(info_msg)
 
         return node_util
@@ -199,6 +227,7 @@ class CFRInstance:
                 logger.info(info_msg)
 
             shuffle(cards)
+            # this is Player 0's value of the game!
             util += self.cfr('', 1, 1, cards)
 
         print()
@@ -213,7 +242,7 @@ class CFRInstance:
 
 
 if __name__ == '__main__':
-    it = 1000000
+    it = 10000
 
     # cards = np.asarray([i + 1 for i in range(3)])
     # print('Unshuffled cards: \n{}'.format(cards))
