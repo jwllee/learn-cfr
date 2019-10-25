@@ -40,7 +40,7 @@ def infoset2str(player_roll, is_claimed, cur_total_n_dices, prev_claim):
     for action in range(n_actions):
         infoset_str += str(int(is_claimed[action]))
     infoset_str += '|' + str(int(cur_total_n_dices))
-    infoset_str += '|' + str(int(prev_claim))
+    # infoset_str += '|' + str(int(prev_claim))
 
     return infoset_str
 
@@ -152,15 +152,15 @@ class InfoSetContainer:
         # make valid claim indices
         n_actions = len(self.is_claimed)
         if not self.is_claimed.any():
-            self.valid_claims = list(range(n_actions - 1))
+            self.legal_actions = list(range(n_actions - 1))
         else:
-            self.valid_claims = list()
+            self.legal_actions = list()
             last_claim = np.argwhere(self.is_claimed).ravel()[-1]
             for action in range(last_claim + 1, n_actions - 1):
                 if self.game.claim_num[action] > self.cur_total_n_dices:
                     break
-                self.valid_claims.append(action)
-            self.valid_claims.append(n_actions - 1)
+                self.legal_actions.append(action)
+            self.legal_actions.append(n_actions - 1)
 
     def get_strategy(self, reach_prob):
         """Get strategy for information set.
@@ -170,20 +170,20 @@ class InfoSetContainer:
 
         n_actions = len(self.is_claimed)
 
-        for action in self.valid_claims:
+        for action in self.legal_actions:
             if self.regret_sum[action] > 0:
                 self.strategy[action] = self.regret_sum[action]
             else:
                 self.strategy[action] = 0.
             normalizing_sum += self.strategy[action]
 
-        for action in self.valid_claims:
+        for action in self.legal_actions:
             if normalizing_sum > 0:
                 self.strategy[action] /= normalizing_sum
             else:
                 # just assign uniform probability over all possible actions
                 # since there is no counterfactual regrets
-                self.strategy[action] = 1. / len(self.valid_claims)
+                self.strategy[action] = 1. / len(self.legal_actions)
             # need to incorporate the reach probability to this particular
             # history in the accumulation for the overall strategy
             
@@ -196,14 +196,14 @@ class InfoSetContainer:
         avg_strategy = np.zeros(n_actions)
 
         normalizing_sum = 0.
-        for action in self.valid_claims:
+        for action in self.legal_actions:
             normalizing_sum += self.strategy_sum[action]
 
-        for action in self.valid_claims:
+        for action in self.legal_actions:
             if normalizing_sum > 0:
                 avg_strategy[action] = self.strategy_sum[action] / normalizing_sum
             else:
-                avg_strategy[action] = 1. / len(self.valid_claims)
+                avg_strategy[action] = 1. / len(self.legal_actions)
 
         return avg_strategy
 
@@ -366,7 +366,7 @@ class CFRInstance:
         # logger.info(info_msg)
         # time.sleep(10) 
 
-        for action in node.valid_claims:
+        for action in node.legal_actions:
             player = self.get_next_player(cur_claimer_history, player_rolls)
 
             history_copied = history.copy()
@@ -382,6 +382,7 @@ class CFRInstance:
 
             util[action] = -self.cfr(claimer_history_copied, reach_probs_copied, 
                                      player_rolls_copied, dices_copied, player_n_dices_copied, history_copied)
+
             node_util += strategy[action] * util[action]
 
         return util, node_util
@@ -549,8 +550,8 @@ class CFRInstance:
 
             dices = self.game_params.get_dices()
             player_rolls = self.set_player_roll(dices)
-            low, high = 0, self.game_params.n_players
-            claim_players = [[np.random.randint(low, high)]]
+            player = 0
+            claim_players = [[player]]
             reach_probs = np.ones(self.game_params.n_players)
             player_n_dices = np.zeros(self.game_params.n_players) 
             player_n_dices += self.game_params.n_dices
@@ -558,6 +559,7 @@ class CFRInstance:
             is_claimed = np.zeros(self.game_params.n_actions, dtype=np.bool)
             history.append(is_claimed)
 
+            # this is player's value of the game
             util_i = self.cfr(claim_players, reach_probs, player_rolls, 
                              dices, player_n_dices, history)
             util += util_i
@@ -585,7 +587,7 @@ class CFRInstance:
 
 
 if __name__ == '__main__':
-    it = 100000
+    it = 1000
 
     n_players, n_dices, n_dice_sides = 2, 1, 6
     n_rounds = np.inf
