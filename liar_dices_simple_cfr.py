@@ -476,7 +476,7 @@ class CFRInstance:
         for action in node.legal_actions:
 
             # we will never visit this subgame in real life
-            if strategy[action] == 0:
+            if strategy[action] <= 0.:
                 continue
 
             history_copied = history.clone()
@@ -555,7 +555,7 @@ class CFRInstance:
     def train(self, it):
         util = 0
         for i in range(it):
-            if (i + 1) % 100 == 0:
+            if (i + 1) % 1000 == 0:
                 info_msg = 'Running iteration {}, Current average game value: {}, {} info sets'
                 info_msg = info_msg.format(i + 1, util / i, len(self.infoset_map))
                 logger.info(info_msg)
@@ -599,8 +599,7 @@ if __name__ == '__main__':
     # player_n_dices = get_player_n_dices(dices)
     # print('No. of player dices: {}'.format(player_n_dices))
 
-    it = 4000
-    # it = 10
+    it = 1000
     start = time.time()
     instance = CFRInstance()
     infosets = instance.train(it)
