@@ -3,6 +3,7 @@ Implementation of counterfactual regret minimization (CFR) with chance sampling 
 """
 import numpy as np
 from utils import make_logger
+import time
 
 np.set_printoptions(precision=3)
 
@@ -145,6 +146,11 @@ class CFRInstance:
         node_util = 0.
 
         for action in range(NB_ACTIONS):
+            # no need to play out subgame since the probability for this action is zero
+            # we will never take this action in real-life
+            if strategy[action] == 0:
+                continue
+
             action_str = PASS_STR if action == PASS else BET_STR
             next_history = history + action_str
 
@@ -243,12 +249,18 @@ class CFRInstance:
 
 
 if __name__ == '__main__':
-    it = 100000
+    it = 1000000
 
     # cards = np.asarray([i + 1 for i in range(3)])
     # print('Unshuffled cards: \n{}'.format(cards))
     # shuffle(cards)
     # print('Shuffled cards: \n{}'.format(cards))
 
+    start = time.time()
     instance = CFRInstance()
     instance.train(it)
+    end = time.time()
+    took = end - start
+
+    info_msg = 'Took {:.2f}s'.format(took)
+    logger.info(info_msg)
