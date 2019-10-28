@@ -626,6 +626,12 @@ if __name__ == '__main__':
     header = [ 'player_roll' ] + is_claimed_claims + regret_claims + avg_strategy_claims
     out_fp = 'n_players_{}-n_dices_{}-n_die_sides_{}-it_{}.csv'
     out_fp = out_fp.format(N_PLAYERS, N_DICES, N_DIE_SIDES, it)
+
+    out_dir = 'results'
+    if not os.path.isdir(out_dir):
+        os.mkdir(out_dir)
+    out_fp = os.path.join(out_dir, out_fp)
+
     df = pd.DataFrame.from_records(infoset_rows, columns=header)
     df['player_roll'] = df['player_roll'].astype(int)
     df[is_claimed_claims] = df[is_claimed_claims].astype(bool)
