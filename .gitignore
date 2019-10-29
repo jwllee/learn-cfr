@@ -110,4 +110,4 @@ dmypy.json
 
 venv/
 *.csv
-
+*.svg
