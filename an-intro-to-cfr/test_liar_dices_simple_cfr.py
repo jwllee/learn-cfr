@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-import liar_dices_simple_cfr_1 as ld
+import liar_dices_simple_cfr as ld
 
 
 def test_get_claim_num():

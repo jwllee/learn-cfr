@@ -1,11 +1,12 @@
 """
-Implementation of simple version of Liar's Dices with 2 players and 1 6-sided die each.
+Implementation of simple version of Liar's dices with 2 players and 1 6-sided die each.
 """
 
 import numpy as np
 import pandas as pd
 import time, copy, math, os
 from functools import reduce
+import multiprocessing as mp
 
 
 from utils import make_logger
@@ -29,13 +30,78 @@ N_ACTIONS = N_PLAYERS * N_DICES * N_DIE_SIDES + 1
 def infoset2int(player_roll, is_claimed):
     """Convert information set to hash number
     """
-    infoset_num = reduce(lambda x, y: x * 10 + y, player_roll, 1)
+    infoset_num = player_roll[0]
     n_actions = len(is_claimed)
     # since we do not need to include the Dudo action as it should not be in an information set
     for action in range(n_actions - 2, -1, -1):
         infoset_num = 2 * infoset_num + int(is_claimed[action])
 
     return infoset_num
+
+
+def infoset2str(player_roll, is_claimed):
+    str_ = str(player_roll[0]) + '|'
+    n_actions = len(is_claimed)
+    for action in range(0, n_actions - 1):
+        str_ = str_ + str(int(is_claimed[action]))
+    return str_
+
+
+def claim_history2str(is_claimed, claim_num, claim_rank):
+    n_actions = len(is_claimed)
+    str_ = ''
+    for action in range(n_actions - 1):
+        if is_claimed[action]:
+            if str_ != '':
+                str_.append(',')
+            str_.append(claim_num[action])
+            str_.append('-')
+            str_.append(claim_rank[action])
+
+    # check for dudo bid
+    if is_claimed[n_action - 1]:
+        # str_ cannot be ''
+        err_msg = 'Cannot have dudo without previous bids: {}'.format(is_claimed)
+        assert str_ != '', err_msg
+        str_.append(',dudo')
+
+    return str_
+
+
+def claim2str(claim, claim_num, claim_rank):
+    num = claim_num[claim]
+    rank = claim_rank[claim]
+    return '{}-{}'.format(num, rank)
+
+
+def strategy2str(strategy, claim_num, claim_rank):
+    str_ = '['
+    for action in range(N_ACTIONS - 1):
+        if str_ != '[':
+            str_ += ', '
+        action_str = claim2str(action, claim_num, claim_rank)
+        str_i = '{}: {:.3f}%'.format(
+            action_str, strategy[action] * 100.
+        )
+        str_ += str_i
+    str_ += ', {}: {:.3f}%'.format('Dudo', strategy[N_ACTIONS - 1] * 100.)
+    str_ += ']'
+    return str_
+
+
+def regret_sum2str(regret_sum, claim_num, claim_rank):
+    str_ = '['
+    for action in range(N_ACTIONS - 1):
+        if str_ != '[':
+            str_ += ', '
+        action_str = claim2str(action, claim_num, claim_rank)
+        str_i = '{}: {:.5f}'.format(
+            action_str, regret_sum[action] 
+        )
+        str_ += str_i
+    str_ += ', {}: {:.5f}'.format('Dudo', regret_sum[N_ACTIONS - 1])
+    str_ += ']'
+    return str_
 
 
 def get_claim_num(n_players, n_dices, n_die_sides):
@@ -58,7 +124,6 @@ def get_dices(n_players, n_dices, n_die_sides):
     low, high = 1, n_die_sides + 1
     shape = (n_players, n_dices)
     dices = np.random.randint(low, high, shape)
-    dices = np.sort(dices, axis=0)
     return dices
 
 
@@ -102,30 +167,11 @@ def deactivate_player_dices(player, n, dices):
     dices[player, start:end] = 0
 
 
-def claim_history2str(is_claimed, claim_num, claim_rank):
-    n_actions = len(is_claimed)
-    str_ = ''
-    for action in range(n_actions - 1):
-        if is_claimed[action]:
-            if str_ != '':
-                str_.append(',')
-            str_.append(claim_num[action])
-            str_.append('-')
-            str_.append(claim_rank[action])
-
-    # check for dudo bid
-    if is_claimed[n_action - 1]:
-        # str_ cannot be ''
-        err_msg = 'Cannot have dudo without previous bids: {}'.format(is_claimed)
-        assert str_ != '', err_msg
-        str_.append(',dudo')
-
-    return str_
-
-
 def get_last_claim(is_claimed):
     if not is_claimed.any():
-        return None
+        err_msg = 'No claims in is_claimed: {}'
+        err_msg = err_msg.format(is_claimed)
+        raise ValueError(err_msg)
     return np.argwhere(is_claimed).ravel()[-1]
 
 
@@ -143,40 +189,30 @@ def get_legal_actions(is_claimed):
     return legal_actions
 
 
-def action2str(action, claim_num, claim_rank):
-    num = claim_num[action]
-    rank = claim_rank[action]
-    return '{}-{}'.format(num, rank)
+def is_terminated(is_claimed):
+    return is_claimed[-1]
 
 
-def strategy2str(strategy, claim_num, claim_rank):
-    str_ = '['
-    for action in range(N_ACTIONS - 1):
-        if str_ != '[':
-            str_ += ', '
-        action_str = action2str(action, claim_num, claim_rank)
-        str_i = '{}: {:.3f}%'.format(
-            action_str, strategy[action] * 100.
-        )
-        str_ += str_i
-    str_ += ', {}: {:.3f}%'.format('Dudo', strategy[N_ACTIONS - 1] * 100.)
-    str_ += ']'
-    return str_
+def check_is_ongoing(is_claimed):
+    if is_terminated(is_claimed):
+        err_msg = 'Game is terminated with claim history: {}'
+        err_msg = err_msg.format(is_claimed)
+        raise ValueError(err_msg)
 
 
-def regret_sum2str(regret_sum, claim_num, claim_rank):
-    str_ = '['
-    for action in range(N_ACTIONS - 1):
-        if str_ != '[':
-            str_ += ', '
-        action_str = action2str(action, claim_num, claim_rank)
-        str_i = '{}: {:.5f}'.format(
-            action_str, regret_sum[action] 
-        )
-        str_ += str_i
-    str_ += ', {}: {:.5f}'.format('Dudo', regret_sum[N_ACTIONS - 1])
-    str_ += ']'
-    return str_
+def check_claim_is_valid(claim, is_claimed):
+    # no claims have been made
+    if not is_claimed.any():
+        if claim == len(is_claimed) - 1:
+            err_msg = 'Dudo cannot be taken when no other claims have been done.'
+            raise ValueError(err_msg)
+        return 
+
+    last_claim = get_last_claim(is_claimed)
+    if claim <= last_claim or claim < 0:
+        err_msg = 'Claim {} is not valid given is_claimed: {}'
+        err_msg = err_msg.format(claim, is_claimed)
+        raise ValueError(err_msg)
 
 
 #====================================================================================================
@@ -207,11 +243,18 @@ class InfoSetContainer:
         for action in self.legal_actions:
             if normalizing_sum > 0:
                 self.strategy[action] /= normalizing_sum
+
+                if self.strategy[action] < 0.002:
+                    self.strategy[action] = 0.
+
             else:
                 # just assign uniform probability over all possible actions
                 # since there is no counterfactual regrets
                 self.strategy[action] = 1. / len(self.legal_actions)
             self.strategy_sum[action] += reach_prob * self.strategy[action]
+
+        if normalizing_sum > 0:
+            self.strategy = self.strategy / self.strategy.sum()
 
         strategy_sum = self.strategy.sum()
         err_msg = 'Strategy {} sums to {:.2f}'.format(self.strategy, strategy_sum)
@@ -261,68 +304,48 @@ class InfoSetContainer:
         return str(repr(self))
 
     def to_row(self):
-        return np.concatenate((self.player_roll, self.is_claimed, self.regret_sum, self.get_average_strategy()))
+        to_concat = [
+            self.player_roll,
+            self.is_claimed,
+            self.regret_sum,
+            self.get_average_strategy()
+        ]
+        return np.concatenate(to_concat)
 
 
 class GameHistory:
+    """Game history for an one round game.
+    """
     def __init__(self, n_actions, first_claimer=0):
         self.n_actions = n_actions
-        self.claimer_history = [[first_claimer]]
-        self.claim_history = [np.zeros(n_actions, dtype=np.bool)]
+        self.claim_history = np.zeros(n_actions, dtype=np.bool)
+        self.cur_player = first_claimer
 
-    def __len__(self):
-        return len(self.claim_history)
+    def is_terminated(self):
+        # game is terminated when someone calls Dudo
+        return is_terminated(self.claim_history)
 
-    @property
-    def cur_claimer_history(self):
-        return self.claimer_history[-1]
-
-    @property
-    def cur_claim_history(self):
-        return self.claim_history[-1]
-
-    @property
-    def round_no(self):
-        return len(self.claim_history)
-
-    @property
-    def cur_player(self):
-        return self.cur_claimer_history[-1]
-
-    def get_next_player(self, active_players):
-        n_active = active_players.sum()
-        err_msg = 'Number of active players: {}'.format(n_active)
-        assert n_active > 1, err_msg
-
-        if len(self.cur_claimer_history) == 1:
-            return self.cur_claimer_history[0]
-        n_players = len(active_players)
-        next_player = self.cur_player
-        candidate = next_player
-        while next_player == self.cur_player:
-            candidate = (candidate + 1) % n_players
-            if active_players[candidate]:
-                next_player = candidate
-                break
-
-        return next_player
-
-    def add_new_round(self, first_claimer=0):
-        is_claimed = np.zeros(self.n_actions, dtype=np.bool)
-        self.claim_history.append(is_claimed)
-        self.claimer_history.append([first_claimer])
+    def get_next_player(self):
+        check_is_ongoing(self.claim_history)
+        return 1 - self.cur_player
 
     def clone(self):
         cloned = GameHistory(self.n_actions)
         cloned.claim_history = copy.deepcopy(self.claim_history)
-        cloned.claimer_history = copy.deepcopy(self.claimer_history)
+        cloned.cur_player = self.cur_player
         return cloned
 
+    def update(self, claim):
+        check_is_ongoing(self.claim_history)
+        check_claim_is_valid(claim, self.claim_history)
+        aux = self.cur_player
+        self.cur_player = self.get_next_player()
+        self.claim_history[claim] = True
+
     def __repr__(self):
-        repr_ = '{}(current claimer history: {}, current claim history: {})'
+        repr_ = '{}(current claim history: {})'
         repr_ = repr_.format(GameHistory.__name__, 
-                             self.cur_claimer_history, 
-                             self.cur_claim_history)
+                             self.claim_history)
         return repr_
 
 
@@ -333,63 +356,18 @@ class CFRInstance:
         self.infoset_map = dict()
         self.wild_card = wild_card
 
-    def get_terminal_utility(self, history, dices):
-        assert isinstance(history, GameHistory)
-
-        n_actives = get_n_active_players(dices)
-
-        winner = None
-        utility = None
-
-        if n_actives == 1:
-            # using the fact that there are only 2 players, return the appropriate value
-            # so that it can be flipped in the parent layer
-            last_player = history.claimer_history[-2][-1]
-            # would have been the opposite player's turn
-            would_have_been = 1 - last_player
-            winner = history.cur_player
-            if would_have_been == winner:
-                utility = 1
-            else:
-                utility = -1
-
-            # if history.claim_history[-2][5]:
-            #     info_msg = 'Last Player {}, Would have been: Player {}, Winner: Player {}, Utility: {}, Claim history: {}'
-            #     info_msg = info_msg.format(last_player, would_have_been, winner, utility, history.claim_history[-2])
-            #     logger.info(info_msg)
-
-        return utility
-
     def get_infoset(self, infoset_id, player_roll, is_claimed):
         node = self.infoset_map.get(infoset_id)
         if node is None:
             node = InfoSetContainer(infoset_id, player_roll, is_claimed.copy(), self)
             self.infoset_map[infoset_id] = node
-        else:
-            assert (node.is_claimed == is_claimed).all()
-            assert (node.player_roll == player_roll).all()
+        assert (node.is_claimed == is_claimed).all()
+        assert node.player_roll == player_roll
         return node
 
-    def accumulate_regret(self, player, node, util, node_util, p0, p1, dices):
-        """For each action, compute and accumulate counterfactual regret.
-        """
-        err_msg = '{!r} is not instance of {}'.format(node, InfoSetContainer.__name__)
-        assert isinstance(node, InfoSetContainer), err_msg
+    def get_terminal_utility(self, player, history, dices):
+        """Get terminal state utility for player if possible.
 
-        counterfactual_reach_prob = p1 if player == 0 else p0
-
-        for action in node.legal_actions:
-            regret = util[action] - node_util
-
-            if node.player_roll == 3 and not node.is_claimed.any():
-                info_msg = "Player {}'s regret for not taking action {}: {}, claim history: {}, node_util: {}, util: {}, dices: {}"
-                info_msg = info_msg.format(player, action, regret, node.is_claimed, node_util, util, dices.ravel())
-                logger.info(info_msg)
-
-            node.regret_sum[action] += counterfactual_reach_prob * regret
-
-    def handle_round_end(self, history, dices):
-        """ 
         Check for the three possible conditions
         1. Actual rank count exceeds the challenged claim:
         Challenger loses a number of dices equal to the difference between the 
@@ -404,62 +382,64 @@ class CFRInstance:
         """
         assert isinstance(history, GameHistory)
 
-        if not history.cur_claim_history[-1]:
-            # info_msg = 'Dudo action not taken in claim history: {}'
-            # info_msg = info_msg.format(history.cur_claim_history)
-            # logger.info(info_msg)
-            return False
+        if not history.is_terminated():
+            return None
 
-        # info_msg = 'Handling end of round {}'.format(history.round_no)
-        # logger.info(info_msg)
+        winner, utility = None, None
 
-        challenger = history.cur_claimer_history[-1]
-        claimer = history.cur_claimer_history[-2]
-
-        claim = np.argwhere(history.cur_claim_history).ravel()[-2]
+        # we are now at terminal node, so there should not be a current
+        # player, instead it was the player before the current player who
+        # challenged the claim.
+        challenger = 1 - history.cur_player
+        claimer = 1 - challenger
+        
+        # second last claim, i.e., last claim excluding the dudo claim
+        claim = get_last_claim(history.claim_history[:-1])
         claimed_rank = self.claim_rank[claim]
         claimed_num = self.claim_num[claim]
         actual_num = get_num_of_rank(dices, claimed_rank, self.wild_card)
         diff = abs(actual_num - claimed_num)
 
-        # if dices.ravel()[0] == self.wild_card or dices.ravel()[1] == self.wild_card:
-        #     info_msg = 'Claim: {}, number of actual num: {} for dices: {}'
-        #     claim_str = '{}-{}'.format(claimed_num, claimed_rank)
-        #     info_msg = info_msg.format(claim_str, actual_num, dices.ravel())
-        #     logger.info(info_msg)
-
-        dices_copied = dices.copy()
-
         # Condition 1
         if actual_num > claimed_num:
             winner = claimer
-            deactivate_player_dices(challenger, diff, dices)
         # Condition 2
         elif actual_num < claimed_num:
             winner = challenger
-            deactivate_player_dices(claimer, diff, dices)
         # Condition 3
         else:
             winner = claimer
-            for player in range(N_PLAYERS):
-                if player == claimer:
-                    continue
-                deactivate_player_dices(player, 1, dices)
 
-        # claim_str = '{}-{}'.format(claimed_num, claimed_rank)
-        # info_msg = 'Claim: {}, Dices: {}, Claimer: Player {}, Challenger: Player {}, Winner: Player {}, Claim history: {}, Claimer history: {}'
-        # info_msg = info_msg.format(
-        #     claim_str, dices_copied.ravel(), 
-        #     claimer, challenger, 
-        #     winner, history.cur_claim_history,
-        #     history.cur_claimer_history
-        # )
+        if winner == player:
+            utility = 1
+        else:
+            utility = -1
+
+        # claim_str = claim2str(claim, self.claim_num, self.claim_rank)
+        # info_msg = 'Winner: Player {}, Claim: {}, Dices: {}'
+        # info_msg = info_msg.format(winner, claim_str, dices.ravel())
         # logger.info(info_msg)
-        # time.sleep(10)
 
-        history.add_new_round(winner)
-        roll_dices(dices, N_PLAYERS, N_DICES, N_DIE_SIDES)
-        return True
+        # info_msg = 'Claimer: Player {}, Challenger: Player {}, Claim: {}'
+        # info_msg = info_msg.format(claimer, challenger, claim_str)
+        # logger.info(info_msg)
+        # info_msg = 'Utility for Player {}: {}, claim history: {}, dices: {}'
+        # info_msg = info_msg.format(player, utility, history.claim_history, dices.ravel())
+        # logger.info(info_msg)
+
+        return utility
+
+    def accumulate_regret(self, player, node, util, node_util, p0, p1, dices):
+        """For each action, compute and accumulate counterfactual regret.
+        """
+        err_msg = '{!r} is not instance of {}'.format(node, InfoSetContainer.__name__)
+        assert isinstance(node, InfoSetContainer), err_msg
+
+        counterfactual_reach_prob = p1 if player == 0 else p0
+
+        for action in node.legal_actions:
+            regret = util[action] - node_util
+            node.regret_sum[action] += counterfactual_reach_prob * regret
 
     def cfr_action(self, node, history, dices, p0, p1):
         """For each action, recursively call cfr with additional history and probability.
@@ -467,12 +447,11 @@ class CFRInstance:
         assert isinstance(history, GameHistory)
         assert isinstance(node, InfoSetContainer)
 
-        active_players = get_player_n_dices(dices) > 0
-        player = history.get_next_player(active_players)
+        player = history.cur_player
         reach_prob = p0 if player == 0 else p1
 
         err_msg = 'Reach probability of Player {}: {}, claim history: {}'
-        err_msg = err_msg.format(player, reach_prob, history.cur_claim_history)
+        err_msg = err_msg.format(player, reach_prob, history.claim_history)
         assert reach_prob > 0, err_msg
 
         strategy = node.get_strategy(reach_prob)
@@ -488,38 +467,23 @@ class CFRInstance:
 
             history_copied = history.clone()
             dices_copied = dices.copy()
+            history_copied.update(action)
 
-            history_copied.cur_claimer_history.append(player)
-            history_copied.cur_claim_history[action] = True
-
-            player_copied = history_copied.get_next_player(active_players)
-            assert player_copied != player
-
-            # err_msg = 'Legal action {} probability <= 0: {}, reach prob: {}, node: {}, strategy: {}'
-            # err_msg = err_msg.format(action, strategy[action], reach_prob, node, strategy)
-            # assert strategy[action] > 0., err_msg
-
-            # info_msg = 'Modified with action {}, Copied claim history: {}'
-            # info_msg = info_msg.format(action, history_copied.cur_claim_history)
-            # logger.info(info_msg)
-            # time.sleep(10)
-            if node.player_roll == 3 and not node.is_claimed.any():
-                info_msg = 'Player {} check utility of action {}, dices: {}'
-                info_msg = info_msg.format(player, action, dices.ravel())
-                logger.info(info_msg)
-
-            if player == 0:
-                p0_action = p0 * strategy[action]
-                util[action] = -self.cfr(history_copied, dices_copied, p0_action, p1)
+            if action == N_ACTIONS - 1:
+                # this is dudo action
+                util[action] = self.get_terminal_utility(player, history_copied, dices)
+                # info_msg = 'Player {} has utility {} for claim history {}, dices: {}'
+                # info_msg = info_msg.format(player, util, history_copied.claim_history, dices.ravel())
+                # logger.info(info_msg)
+                # time.sleep(10)
             else:
-                p1_action = p1 * strategy[action]
-                util[action] = -self.cfr(history_copied, dices_copied, p0, p1_action)
-
-            if node.player_roll == 3 and not node.is_claimed.any():
-                info_msg = 'Player {}, Utility of action {}: {}, Claim history: {}'
-                info_msg = info_msg.format(player, action, util[action], history.cur_claim_history)
-                logger.info(info_msg)
-                time.sleep(10)
+                # recursive call
+                if player == 0:
+                    p0_action = p0 * strategy[action]
+                    util[action] = -self.cfr(history_copied, dices_copied, p0_action, p1)
+                else:
+                    p1_action = p1 * strategy[action]
+                    util[action] = -self.cfr(history_copied, dices_copied, p0, p1_action)
 
             node_util += strategy[action] * util[action]
 
@@ -528,25 +492,14 @@ class CFRInstance:
     def cfr(self, history, dices, p0, p1):
         assert isinstance(history, GameHistory)
 
-        # info_msg = 'cfr: claim history: {}'
-        # info_msg = info_msg.format(history.cur_claim_history)
-        # logger.info(info_msg)
-        # time.sleep(10)
+        player = history.cur_player
 
-        round_ended = self.handle_round_end(history, dices)
-
-        utility = self.get_terminal_utility(history, dices)
-
-        if utility is not None:
-            return utility
-
-        active_players = get_player_n_dices(dices) > 0
-        player = history.get_next_player(active_players)
         player_roll = dices[player]
-        infoset_id = infoset2int(player_roll, history.cur_claim_history)
+        # infoset_id = infoset2int(player_roll, history.claim_history)
+        infoset_id = infoset2str(player_roll, history.claim_history)
 
         # Get information set node or create it if nonexistent
-        node = self.get_infoset(infoset_id, player_roll, history.cur_claim_history)
+        node = self.get_infoset(infoset_id, player_roll, history.claim_history)
 
         # For each action, recursively call cfr with additional history and probability
         util, node_util = self.cfr_action(node, history, dices, p0, p1)
@@ -554,71 +507,60 @@ class CFRInstance:
         # For each action, compute and accumulate counterfactual regret
         self.accumulate_regret(player, node, util, node_util, p0, p1, dices)
 
-        # info_msg = 'Infoset {}, regret sum: {}'
-        # info_msg = info_msg.format(node, node.regret_sum)
-        # logger.info(info_msg)
-
         return node_util
 
     def train(self, it, reset_sum_it=-1):
         util = 0
+        dice_count_0 = np.zeros(7)
+        dice_count_1 = np.zeros(7)
+        util_list = []
         for i in range(it):
             if (i + 1) % 1000 == 0:
-                info_msg = 'Running iteration {}, Current average game value: {}, {} info sets'
+                info_msg = 'Running iteration {}, Current average game value: {:.4f}, {} info sets'
                 info_msg = info_msg.format(i + 1, util / i, len(self.infoset_map))
                 logger.info(info_msg)
 
-            # dices = get_dices(N_PLAYERS, N_DICES, N_DIE_SIDES)
-            player_0_roll = np.random.randint(low=1, high=4)
-            player_1_roll = np.random.randint(low=1, high=7)
-            dices = np.asarray([player_0_roll, player_1_roll]).reshape((N_PLAYERS, N_DICES))
-            history = GameHistory(N_ACTIONS)
+            dices = get_dices(N_PLAYERS, N_DICES, N_DIE_SIDES)
+            dice_count_0[dices[0,0]] += 1
+            dice_count_1[dices[1,0]] += 1
+            history = GameHistory(N_ACTIONS, first_claimer=0)
 
             util_i = self.cfr(history, dices, 1, 1)
             util += util_i
 
-        if i == reset_sum_it:
-            for infoset in self.infoset_map.values():
-                infoset.strategy_sum[:] = 0.
+            if i == reset_sum_it:
+                for infoset in self.infoset_map.values():
+                    infoset.strategy_sum[:] = 0.
+
+            if (i + 1) % 100 == 0:
+                util_list.append((i, util / i))
 
         print()
-        info_msg = 'Average game value: {:.4f}'.format(util / it)
+        info_msg = 'Average game value: {:.4f}'.format(util / i)
         logger.info(info_msg)
 
         print()
         info_msg = '{} information sets'.format(len(self.infoset_map))
         logger.info(info_msg)
 
-#             assert isinstance(node, InfoSetContainer)
-        if node.player_roll == 3:
-            count += 1
-            nodes.append(node)
-        nodes = sorted(nodes, key=lambda n: is_claimed_key(n.is_claimed))
-        for node in nodes:
-            print(node)
-        logger.info('{} infosets'.format(count))
+        print()
+        info_msg = 'Player 0 dice count: {}'
+        info_msg = info_msg.format(dice_count_0)
+        logger.info(info_msg)
 
-        return self.infoset_map.values()
- 
+        info_msg = 'Player 1 dice count: {}'
+        info_msg = info_msg.format(dice_count_1)
+        logger.info(info_msg)
+
+        return self.infoset_map.values(), util_list
+
 
 if __name__ == '__main__':
-    # dices = get_dices(N_PLAYERS + 2, N_DICES + 5, N_DIE_SIDES)
-    # print('Dices: \n{}'.format(dices))
-
-    # n_dices = get_n_dices(dices[0])
-    # print('No. of dices in {}: {}'.format(dices[0], n_dices))
-
-    # deactivate_player_dices(2, 3, dices)
-    # print('Dices: \n{}'.format(dices))
-
-    # player_n_dices = get_player_n_dices(dices)
-    # print('No. of player dices: {}'.format(player_n_dices))
-
-    it = 10000
-    reset_sum_it = -1
+    it = 360000
+    reset_sum_it = 10
     start = time.time()
     instance = CFRInstance()
-    infosets = instance.train(it, reset_sum_it=reset_sum_it)
+    infosets, util_list = instance.train(it, reset_sum_it=reset_sum_it)
 
     end = time.time()
     took = end - start
@@ -648,8 +590,13 @@ if __name__ == '__main__':
         os.mkdir(out_dir)
     out_fp = os.path.join(out_dir, out_fp)
 
+    util_fp = 'n_players_{}-n_dices_{}-n_die_sides_{}-it_{}-util.csv'
+    util_fp = util_fp.format(N_PLAYERS, N_DICES, N_DIE_SIDES, it)
+    util_fp = os.path.join(out_dir, util_fp)
+    util_df = pd.DataFrame.from_records(util_list, columns=['iteration', 'avg_util'])
+    util_df.to_csv(util_fp, index=None)
+
     df = pd.DataFrame.from_records(infoset_rows, columns=header)
     df['player_roll'] = df['player_roll'].astype(int)
     df[is_claimed_claims] = df[is_claimed_claims].astype(bool)
     df.to_csv(out_fp, index=None, float_format='%.8f')
-
