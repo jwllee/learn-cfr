@@ -509,7 +509,7 @@ class CFRInstance:
 
         return node_util
 
-    def train(self, it, reset_sum_it=-1):
+    def train(self, it, reset_sum_it=-1, chance_sampling=False):
         util = 0
         dice_count_0 = np.zeros(7)
         dice_count_1 = np.zeros(7)
@@ -520,24 +520,29 @@ class CFRInstance:
                 info_msg = info_msg.format(i + 1, util / i, len(self.infoset_map))
                 logger.info(info_msg)
 
-            # do not use chance sampling, just iterate through all possible dice rolls
-            # dices = get_dices(N_PLAYERS, N_DICES, N_DIE_SIDES)
-            util_i, n_combo = 0, 0
+            if chance_sampling:
+                dices = get_dices(N_PLAYERS, N_DICES, N_DIE_SIDES)
+                history = GameHistory(N_ACTIONS, first_claimer=0)
+                util_i = self.cfr(history, dices, 1, 1)
+            else:
+                # do not use chance sampling, just iterate through all possible dice rolls
+                util_i, n_combo = 0, 0
 
-            for player_0_roll in range(1, N_DIE_SIDES + 1):
-                for player_1_roll in range(1, N_DIE_SIDES + 1):
-                    dices = np.asarray([player_0_roll, player_1_roll])
-                    dices = dices.reshape((N_PLAYERS, N_DICES))
-                    dice_count_0[dices[0,0]] += 1
-                    dice_count_1[dices[1,0]] += 1
-                    history = GameHistory(N_ACTIONS, first_claimer=0)
+                for player_0_roll in range(1, N_DIE_SIDES + 1):
+                    for player_1_roll in range(1, N_DIE_SIDES + 1):
+                        dices = np.asarray([player_0_roll, player_1_roll])
+                        dices = dices.reshape((N_PLAYERS, N_DICES))
+                        dice_count_0[dices[0,0]] += 1
+                        dice_count_1[dices[1,0]] += 1
+                        history = GameHistory(N_ACTIONS, first_claimer=0)
 
-                    util_i += self.cfr(history, dices, 1, 1)
-                    n_combo += 1
+                        util_i += self.cfr(history, dices, 1, 1)
+                        n_combo += 1
 
-            # get the average utility over all possible combination, each combination 
-            # should have the same probability to show up
-            util_i = util_i / n_combo
+                # get the average utility over all possible combination, each combination 
+                # should have the same probability to show up
+                util_i = util_i / n_combo
+
             util += util_i
 
             if i == reset_sum_it:
@@ -570,9 +575,11 @@ class CFRInstance:
 if __name__ == '__main__':
     it = 1000
     reset_sum_it = 10
+    chance_sampling = False
     start = time.time()
     instance = CFRInstance()
-    infosets, util_list = instance.train(it, reset_sum_it=reset_sum_it)
+    infosets, util_list = instance.train(it, reset_sum_it=reset_sum_it, 
+                                         chance_sampling=chance_sampling)
 
     end = time.time()
     took = end - start
