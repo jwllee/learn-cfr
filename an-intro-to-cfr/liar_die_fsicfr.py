@@ -3,7 +3,9 @@ Implementation of Fixed-Strategy-Iteration Counterfactual Regret Minimization fo
 
 This is an exercise from the paper An Introduction to Counterfactual Regret Minimization.
 """
+import os
 import numpy as np
+import pandas as pd
 from utils import make_logger
 from tabulate import tabulate
 
@@ -48,6 +50,7 @@ class Node:
         normalizing_sum = 0.
 
         # accumulate positive regret sum at strategy
+        self.strategy[:] = 0.
         positive_regret_ind = self.regret_sum > 0
         self.strategy[positive_regret_ind] = self.regret_sum[positive_regret_ind]
         normalizing_sum += self.strategy[positive_regret_ind].sum()
@@ -58,6 +61,11 @@ class Node:
             self.strategy[:] = 1. / self.n_actions
 
         self.strategy_sum += self.reach_player * self.strategy
+
+        strategy_str = strategy2str(self.strategy)
+        err_msg = 'Strategy {} sums to {:.2f}, normalizing sum: {:.2f}'
+        err_msg = err_msg.format(strategy_str, self.strategy.sum(), normalizing_sum)
+        assert np.isclose(self.strategy.sum(), 1.), err_msg
 
         return self.strategy
 
@@ -195,6 +203,11 @@ class LiarDieTrainer:
 
             # legal actions are all next legal claims
             action_prob = node.strategy
+            strategy_str = strategy2str(action_prob)
+            err_msg = 'Action prob {} sums to {:.2f}'
+            err_msg = err_msg.format(strategy_str, action_prob.sum())
+            assert np.isclose(action_prob.sum(), 1.), err_msg
+
             # recompute the node utility, so need to reset it
             node.u = 0.
 
@@ -241,6 +254,11 @@ class LiarDieTrainer:
 
                 # legal actions are DOUBT and ACCEPT, or just one of them depending on the scenario
                 action_prob = node.strategy
+                strategy_str = strategy2str(action_prob)
+                err_msg = 'Action prob {} sums to {:.2f}'
+                err_msg = err_msg.format(strategy_str, action_prob.sum())
+                assert np.isclose(action_prob.sum(), 1.), err_msg
+
                 node.u = 0.
                 # the roll that opponent got after accepting my_claim to make opp_claim
                 roll = roll_arr[my_claim]
@@ -309,6 +327,7 @@ class LiarDieTrainer:
         regret_claim = np.zeros(self.n_sides + 1)
         regret_response = np.zeros(2)
         roll_after_accepting_claim = None
+        claim_value = 0.
         for it in range(n_iter):
             if it % 2000 == 0:
                 info_msg = 'Doing iteration {}'.format(it)
@@ -327,6 +346,15 @@ class LiarDieTrainer:
 
             # reset strategy sums after half of training
             self.reset_strategy_sum(it, n_iter)
+
+            claim_value_i = self.claim_nodes[0][roll_after_accepting_claim[0]].u
+            claim_value += claim_value_i
+
+            if (it + 1) % 1000 == 0:
+                aux = claim_value / (it + 1)
+                info_msg = 'Iteration {}: Avg. initial claim value: {:.5f}'
+                info_msg = info_msg.format(it + 1, aux)
+                logger.info(info_msg)
 
         # print resulting strategy
         self.print_resulting_strategy()
@@ -377,6 +405,54 @@ class LiarDieTrainer:
         table_str = tabulate(table, headers=header)
         print(table_str)
 
+    def strategy2df(self):
+        """Things recorded about two types of strategies.
+        For response nodes:
+        - old claim
+        - new claim
+        - action probabilities to accept or reject (-1. if not available)
+
+        For claim nodes:
+        - old claim
+        - roll 
+        - action probabilities for the different possible claims
+        """
+        header = [ 'old_claim', 'new_claim', 'doubt', 'accept' ] 
+        rows = []
+        for prev_claim in range(self.n_sides + 1):
+            for cur_claim in range(prev_claim + 1, self.n_sides + 1):
+                # there is only one possible action when there is no prior claim
+                # and only one possible action (i.e., ACCEPT) when the opponent 
+                # claims the highest rank equal to the number of sides (i.e., DOUBT)
+                node = self.response_nodes[prev_claim][cur_claim]
+                assert isinstance(node, Node)
+
+                row = [prev_claim, cur_claim]
+                if cur_claim == self.n_sides:
+                    row.append(-1.)
+                    row = np.concatenate((row, node.strategy))
+                else:
+                    row = np.concatenate((row, node.strategy))
+                rows.append(row)
+        response_df = pd.DataFrame.from_records(rows, columns=header)
+        response_df[['old_claim', 'new_claim']] = response_df[['old_claim', 'new_claim']].astype(int)
+
+        header = ['old_claim', 'roll',] + [str(i) for i in range(self.n_sides + 1)]
+        rows = []
+        for old_claim in range(self.n_sides):
+            for roll in range(1, self.n_sides + 1):
+                # the number of legal claims remaining are the number of sides
+                # minus the previous opponent claim
+                node = self.claim_nodes[old_claim][roll]
+                assert isinstance(node, Node)
+                row = [old_claim, roll] + [-1. for i in range(old_claim + 1)]
+                row = np.concatenate((row, node.strategy))
+                rows.append(row)
+        claim_df = pd.DataFrame.from_records(rows, columns=header)
+        claim_df[['old_claim', 'roll']] = claim_df[['old_claim', 'roll']].astype(int)
+
+        return claim_df, response_df
+
     def reset_strategy_sum(self, it, n_iter):
         if it == n_iter / 2:
             for node_arr in self.response_nodes:
@@ -391,7 +467,23 @@ class LiarDieTrainer:
 
 
 if __name__ == '__main__':
-    n_iter = 1000000
+    n_iter = 1000
     trainer = LiarDieTrainer(N_DIE_SIDES)
 
     trainer.train(n_iter)
+
+    claim_df, response_df = trainer.strategy2df()
+
+    outdir = os.path.join('results', 'liar-die-fsicfr')
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
+
+    claim_fname = 'liar-die-fsicfr-n_die_sides_{}-it_{}-claim.csv'
+    claim_fname = claim_fname.format(trainer.n_sides, n_iter)
+    claim_fp = os.path.join(outdir, claim_fname)
+    claim_df.to_csv(claim_fp, index=None, float_format='%.5f')
+
+    response_fname = 'liar-die-fsicfr-n_die_sides_{}-it_{}-response.csv'
+    response_fname = response_fname.format(trainer.n_sides, n_iter)
+    response_fp = os.path.join(outdir, response_fname)
+    response_df.to_csv(response_fp, index=None, float_format='%.5f')
