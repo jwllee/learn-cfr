@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from utils import make_logger
 from tabulate import tabulate
+import multiprocessing as mp
 
 
 logger = make_logger('liar_die_fsicfr.py')
@@ -327,12 +328,12 @@ class LiarDieTrainer:
         regret_claim = np.zeros(self.n_sides + 1)
         regret_response = np.zeros(2)
         roll_after_accepting_claim = None
-        claim_value = 0.
+        exploitability_list = []
         for it in range(n_iter):
-            if it % 2000 == 0:
-                info_msg = 'Doing iteration {}'.format(it)
-                logger.info(it)
-                self.print_resulting_strategy()
+            # if it % 2000 == 0:
+            #     info_msg = 'Doing iteration {}'.format(it)
+            #     logger.info(it)
+            #     self.print_resulting_strategy()
 
             # initialize rolls and starting probabilities
             roll_after_accepting_claim = self.get_init_rolls()
@@ -344,20 +345,20 @@ class LiarDieTrainer:
             # backpropagate utilities, adjusting regrets and strategies
             self.backpropagate(roll_after_accepting_claim, regret_claim, regret_response)
 
+            if (it + 1) % 1000 == 0:
+                exploitability = get_exploitability(self.claim_nodes, self.response_nodes, self.n_sides)
+                info_msg = 'Iteration {}: Exploitability: {:.5f}'
+                info_msg = info_msg.format(it + 1, exploitability)
+                logger.info(info_msg)
+                exploitability_list.append((it + 1, exploitability))
+
             # reset strategy sums after half of training
             self.reset_strategy_sum(it, n_iter)
 
-            claim_value_i = self.claim_nodes[0][roll_after_accepting_claim[0]].u
-            claim_value += claim_value_i
-
-            if (it + 1) % 1000 == 0:
-                aux = claim_value / (it + 1)
-                info_msg = 'Iteration {}: Avg. initial claim value: {:.5f}'
-                info_msg = info_msg.format(it + 1, aux)
-                logger.info(info_msg)
-
         # print resulting strategy
         self.print_resulting_strategy()
+
+        return exploitability_list
 
     def print_resulting_strategy(self):
         for init_roll in range(1, self.n_sides + 1):
@@ -465,12 +466,180 @@ class LiarDieTrainer:
                     if node is not None:
                         node.strategy_sum[:] = 0
 
+#====================================================================================================
+# Exploitability
+#====================================================================================================
+"""To compute the exploitability metric by traversing the game tree selecting the best response strategy. This is possible because the game is 2p and zero sum.
 
+exploitability = b_1(sigma_2) + b_2(sigma_1)
+"""
+def get_response_node_value(player, cur_player, old_claim, new_claim, claim_nodes, response_nodes, n_sides):
+    roll_weight = 1. / n_sides
+    node = response_nodes[old_claim][new_claim]
+    assert isinstance(node, Node)
+    next_player = 1 - cur_player
+    
+    # there is only one possible action, i.e., doubt
+    if node.n_actions == 1:
+        assert new_claim == n_sides
+        # opponent's roll after accepting my old_claim
+        best_action_value = 0.
+        for roll in range(1, n_sides + 1):
+            roll_value = 1 if new_claim > roll else -1
+            best_action_value += roll_weight * roll_value
+        return best_action_value
+
+    # player is the decision maker, choose the best single action, i.e., the one with maximum regret
+    best_action_value = 0.
+    action_prob = node.get_strategy()
+    # need to evaluate both actions and select the best one
+    for roll_doubt in range(1, n_sides + 1):
+        doubt_util = 1 if new_claim > roll_doubt else -1
+        accept_util = get_claim_node_value_with_chance(player, cur_player, new_claim, claim_nodes, response_nodes, n_sides)
+
+        if cur_player == player:
+            roll_value = doubt_util if doubt_util >= accept_util else accept_util
+        else:
+            roll_value = action_prob[DOUBT] * doubt_util + action_prob[ACCEPT] * accept_util
+
+        best_action_value += roll_weight * roll_value
+
+    return best_action_value
+
+
+def get_claim_node_value(player, cur_player, old_claim, roll, claim_nodes, response_nodes, n_sides):
+    # claim nodes are never terminal nodes
+    node = claim_nodes[old_claim][roll]
+    assert isinstance(node, Node)
+    next_player = 1 - cur_player
+
+    # player is the decision maker, choose the best single action, i.e., the one with maximum regret
+    if cur_player == player:
+        if node.n_actions == 1:
+            # there is only one possible action
+            best_action = old_claim + 1
+            best_action_value = -get_response_node_value(player, cur_player, 
+                                                         old_claim, best_action, 
+                                                         claim_nodes, response_nodes, n_sides)
+            return best_action_value
+        best_action = old_claim + 1
+        best_action_value = -get_response_node_value(player, next_player,
+                                                    old_claim, best_action,
+                                                    claim_nodes, response_nodes, n_sides)
+
+        for new_claim in range(old_claim + 2, n_sides + 1):
+            value = -get_response_node_value(player, next_player, old_claim,
+                                            new_claim, claim_nodes, response_nodes, n_sides)
+            if value > best_action_value:
+                best_action = new_claim
+                best_action_value = value
+
+        return best_action_value
+    # current player is not the player we are computing for
+    # so just weigh the child node values by their respective action probability
+    else:
+        value = 0.
+        action_prob = node.strategy
+        for new_claim in range(old_claim + 1, n_sides + 1):
+            action_value = get_response_node_value(player, next_player, old_claim,
+                                                   new_claim, claim_nodes, response_nodes, n_sides)
+            value += action_prob[new_claim - old_claim - 1] * action_value
+        return value
+
+
+def get_claim_node_value_with_chance_worker(args):
+    player = args['player']
+    cur_player = args['cur_player']
+    old_claim = args['old_claim']
+    claim_nodes = args['claim_nodes']
+    response_nodes = args['response_nodes'] 
+    roll_arr = args['roll_arr']
+    n_sides = args['n_sides']
+
+    roll_weight = 1. / n_sides
+    value = 0.
+    for roll in roll_arr:
+        roll_value = get_claim_node_value(player, cur_player, old_claim, roll, 
+                                          claim_nodes, response_nodes, n_sides)
+        value += roll_weight * roll_value
+    return value
+
+
+def get_claim_node_value_with_chance(player, cur_player, old_claim, 
+                                     claim_nodes, response_nodes, n_sides, n_procs=1):
+    value, roll_weight = 0., 1. / n_sides
+    if n_procs < 1:
+        n_procs = mp.cpu_count() - 1
+        n_procs = n_sides if n_procs > n_sides else n_procs
+
+    rolls = list(range(1, n_sides + 1))
+
+    if n_procs > 1:
+        roll_partition = np.array_split(rolls, n_procs)
+
+        args_list = [{
+            'player': player,
+            'cur_player': cur_player,
+            'old_claim': old_claim,
+            'claim_nodes': claim_nodes,
+            'response_nodes': response_nodes,
+            'roll_arr': roll_partition[i],
+            'n_sides': n_sides
+        } for i in range(n_procs)]
+
+        pool = mp.Pool(processes=n_procs)
+        results = pool.map(get_claim_node_value_with_chance_worker, args_list)
+        value = sum(results)
+        pool.close()
+    else:
+        args = {
+            'player': player,
+            'cur_player': cur_player,
+            'old_claim': old_claim,
+            'claim_nodes': claim_nodes,
+            'response_nodes': response_nodes,
+            'roll_arr': rolls,
+            'n_sides': n_sides
+        } 
+        value = get_claim_node_value_with_chance_worker(args)
+
+    return value
+
+
+def get_best_response_value(player, cur_player, claim_nodes, response_nodes, n_sides):
+    """
+    :param player int: player for which we are computing the best-response value
+    :param claim_nodes array_like: claim nodes
+    :param response_nodes array_like: response nodes
+    :param roll_arr array_like: predetermined player rolls
+    :param n_sides int: number of die sides
+    """
+    old_claim = 0
+    next_player = 1 - cur_player
+    n_procs = -1
+    return get_claim_node_value_with_chance(player, next_player, old_claim, 
+                                            claim_nodes, response_nodes, n_sides, n_procs)
+
+
+def get_exploitability(claim_nodes, response_nodes, n_sides):
+    p0_best = get_best_response_value(0, 0, claim_nodes, response_nodes, n_sides)
+    p1_best = -get_best_response_value(1, 0, claim_nodes, response_nodes, n_sides)
+    exploitability = p0_best + p1_best
+
+    # info_msg = 'Best response value: p0: {:.2f}, p1: {:.2f}, Exploitability: {:.2f}'
+    # info_msg = info_msg.format(p0_best, p1_best, exploitability)
+    # logger.info(info_msg)
+
+    return exploitability
+
+#====================================================================================================
+
+    
 if __name__ == '__main__':
-    n_iter = 1000
+    n_iter = 6000
     trainer = LiarDieTrainer(N_DIE_SIDES)
 
-    trainer.train(n_iter)
+    exploitability_list = trainer.train(n_iter)
 
     claim_df, response_df = trainer.strategy2df()
 
@@ -487,3 +656,12 @@ if __name__ == '__main__':
     response_fname = response_fname.format(trainer.n_sides, n_iter)
     response_fp = os.path.join(outdir, response_fname)
     response_df.to_csv(response_fp, index=None, float_format='%.5f')
+
+    exploitability_fname = 'liar-die-fsicfr-n_die_sides_{}-it_{}-exploitability.csv'
+    exploitability_fname = exploitability_fname.format(trainer.n_sides, n_iter)
+    exploitability_fp = os.path.join(outdir, exploitability_fname)
+    
+    columns = ['iteration', 'exploitability']
+    exploitability_df = pd.DataFrame.from_records(exploitability_list, columns=columns)
+    exploitability_df['iteration'] = exploitability_df['iteration'].astype(int)
+    exploitability_df.to_csv(exploitability_fp, index=None, float_format='%.5f')
